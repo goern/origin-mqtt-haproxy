@@ -58,13 +58,25 @@ listen stats :{{.StatsPort}}
     stats auth {{.StatsUser}}:{{.StatsPassword}}
 {{ end }}
 
-listen mqtt
-  bind *:1883
+
+##########################################################################
+# MQTT 
+#
+# Experimental implemententation config of MQTT
+##########################################################################
+
+frontend mqtt
+  bind :1883
 #  #bind *:8883 ssl crt /certs/lelylan-mqtt.pem
   mode tcp
 #  #option tcplog
 #  #balance leastconn
-  server activemq_1 172.30.34.15:1883 check
+  #server activemq_1 172.30.34.15:1883 checka
+  #use_backend be_mqtt_%[map(/var/lib/haproxy/conf/os_tcp_be.map)] 
+  acl sni req.ssl_sni -m found
+  acl sni_passthrough req.ssl_sni,map(/var/lib/haproxy/conf/os_sni_passthrough.map) -m found
+  use_backend be_mqtt_%[req.ssl_sni,map(/var/lib/haproxy/conf/os_mqtt_be.map)] if sni sni_passthrough
+
 
 frontend public
   bind :80
@@ -233,6 +245,16 @@ backend be_tcp_{{$cfgIdx}}
   hash-type consistent
   timeout check 5000ms
                 {{ range $idx, $endpoint := endpointsForAlias $cfg $serviceUnit }}
+  server {{$endpoint.ID}} {{$endpoint.IP}}:{{$endpoint.Port}} check
+                {{ end }}
+            {{ end }}
+
+            {{ if eq $cfg.TLSTermination "passthrough" }}
+backend be_mqtt_{{$cfgIdx}}
+  balance source
+  hash-type consistent
+  timeout check 5000ms
+                {{ range $idx, $endpoint := endpointsForAlias $cfg $serviceUnit }}
   server {{$endpoint.ID}} {{$endpoint.IP}}:{{$endpoint.Port}} check inter 5000ms
                 {{ end }}
             {{ end }}
@@ -312,6 +334,20 @@ backend be_secure_{{$cfgIdx}}
 {{   end }}
 {{ end }}{{/* end edge insecure redirect http host map template */}}
 
+
+{{/*
+    os_mqtt_be.map: contains a mapping of www.example.com -> <service name>.  This map is used to discover the correct backend
+                        by attaching a prefix (be_mqtt_ or be_secure_) by use_backend statements if acls are matched.
+*/}}
+{{ define "/var/lib/haproxy/conf/os_mqtt_be.map" }}
+{{   range $id, $serviceUnit := .State }}
+{{     range $idx, $cfg := $serviceUnit.ServiceAliasConfigs }}
+{{       if and (eq $cfg.Path "") (and (ne $cfg.Host "") (or (eq $cfg.TLSTermination "passthrough") (eq $cfg.TLSTermination "reencrypt"))) }}
+{{$cfg.Host}} {{$idx}}
+{{       end }}
+{{     end }}
+{{   end }}
+{{ end }}{{/* end tcp host map template */}}
 
 {{/*
     os_tcp_be.map: contains a mapping of www.example.com -> <service name>.  This map is used to discover the correct backend
